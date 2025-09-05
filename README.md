@@ -7,7 +7,7 @@ will simplify many tasks for you.
 Create a [private fork of the public repo](https://gist.github.com/0xjac/85097472043b697ab57ba1b1c7530274) 
 when working on your solution
 
-The project description and specifications of Project 1 can be found at the website [here](https://www.cs.cmu.edu/~btitzer/cs17-770/fall2024/proj1.html).
+The project description and specifications of Project 1 can be found at the website [here](https://www.cs.cmu.edu/~wasm/cs17-770/fall2025/proj1.html).
 
 The core [WebAssembly spec](https://webassembly.github.io/spec/core/intro/index.html) is a valuable reference resource for implementation.
 
