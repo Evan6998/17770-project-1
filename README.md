@@ -43,7 +43,7 @@ While C/Make files may be modified,
 
 ### Tests
 We have provided some sample tests along with a build script to build.
-You will likely want to build upon the suite to test edge cases and more complex applications.
+**For this assignment, you are required to produce at least 25 problems of a non-trivial complexity (i.e. more than a single instruction).**
 
 To build tests, run `make build-tests`.
 
