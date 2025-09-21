@@ -244,6 +244,16 @@ class WasmModule {
     inline MemoryDecl* getMemory(uint32_t idx)  { return GET_LIST_ELEM(this->mems, idx); }
     inline DataDecl* getData(uint32_t idx)      { return GET_LIST_ELEM(this->datas, idx); }
     inline ImportDecl* getImport(uint32_t idx)  { return GET_LIST_ELEM(this->imports.list, idx); }
+    
+    /* Const versions */
+    inline const TableDecl* getTable(uint32_t idx) const    { return GET_LIST_ELEM(this->tables, idx); }
+    inline const MemoryDecl* getMemory(uint32_t idx) const  { return GET_LIST_ELEM(this->mems, idx); }
+    inline uint32_t get_num_mems() const        { return static_cast<uint32_t>(this->mems.size()); }
+    inline uint32_t get_num_imported_mems() const { return this->imports.num_mems; }
+    inline uint32_t get_num_tables() const      { return static_cast<uint32_t>(this->tables.size()); }
+    inline uint32_t get_num_imported_tables() const { return this->imports.num_tables; }
+    inline uint32_t get_num_globals() const     { return static_cast<uint32_t>(this->globals.size()); }
+    inline uint32_t get_num_imported_globals() const { return this->imports.num_globals; }
 
     /* Index Accessors */
     inline uint32_t getSigIdx(SigDecl *sig)           const { return GET_LIST_IDX(this->sigs, sig); }
@@ -264,6 +274,11 @@ class WasmModule {
     inline std::deque <FuncDecl> &Funcs() { return this->funcs; }
     inline std::deque <GlobalDecl> &Globals() { return this->globals; }
     inline std::list  <ExportDecl> &Exports() { return this->exports; }
+    inline std::list  <ElemDecl> &Elems() { return this->elems; }
+    
+    /* Const Section Accessors */
+    inline const std::deque <GlobalDecl> &Globals() const { return this->globals; }
+    inline const std::list  <ExportDecl> &Exports() const { return this->exports; }
 
     inline FuncDecl* get_start_fn() { return this->start_fn; }
     inline uint32_t get_num_customs() { return this->customs.size(); }
@@ -272,5 +287,3 @@ class WasmModule {
     void decode_buffer (buffer_t &buf);
 
 };
-
-

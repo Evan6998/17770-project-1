@@ -7,6 +7,7 @@
 #include "common.h"
 #include "parse.h"
 #include "ir.h"
+#include "vm.h"
 
 static struct option long_options[] = {
   {"trace", no_argument,  &g_trace, 1},
@@ -73,7 +74,3 @@ int main(int argc, char *argv[]) {
 
   return 0;
 }
-
-
-
-
