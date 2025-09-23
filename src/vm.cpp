@@ -213,6 +213,24 @@ void WasmVM::run_op(buffer_t &buf) {
       push(local_value);
       break;
     }
+    case WASM_OP_BLOCK: {
+      // MVP only supports the empty blocktype (0x40). Consume it and push a label.
+      uint8_t block_type = RD_BYTE();
+      if (block_type != 0x40) {
+        throw std::runtime_error("non-empty blocktype is not supported");
+      }
+
+      Frame& current_frame = call_stack_.back();
+      Label block{};
+      block.kind = Label::Kind::Block;
+      block.pc_begin = buf.ptr;   // execution continues with the following instruction
+      block.pc_end = nullptr;     // resolved when matching END is seen or by future br setup
+      block.pc_else = nullptr;
+      block.stack_height = sp();
+      current_frame.labels.push_back(block);
+      TRACE("BLOCK: depth %zu\n", current_frame.labels.size());
+      break;
+    }
     case WASM_OP_F64_ADD: {
       if (sp() < 2) {
         throw std::runtime_error("Not enough values on the operand stack for f64.add");
@@ -222,6 +240,9 @@ void WasmVM::run_op(buffer_t &buf) {
       auto result = std::get<double>(val1) + std::get<double>(val2);
       TRACE("F64_ADD: %f + %f = %f\n", std::get<double>(val1), std::get<double>(val2), result);
       push(result);
+      break;
+    }
+    case WASM_OP_NOP: {
       break;
     }
     case WASM_OP_UNREACHABLE: {
