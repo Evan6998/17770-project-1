@@ -70,7 +70,8 @@ int main(int argc, char *argv[]) {
   unload_file(&start, &end);
   
   /* Interpreter here */
-  /* */
+  WasmVM vm(module);
+  vm.run(args.mainargs);
 
   return 0;
 }
