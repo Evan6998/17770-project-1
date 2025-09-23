@@ -1,8 +1,47 @@
 #include <algorithm>
-#include <stdexcept>
+#include <cstring>
 #include <iostream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "vm.h"
+
+namespace {
+
+float raw_to_f32(uint32_t raw) {
+  float value;
+  std::memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
+double raw_to_f64(uint64_t raw) {
+  double value;
+  std::memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
+Value zero_value_for(wasm_type_t type) {
+  switch (type) {
+    case WASM_TYPE_I32:
+      return static_cast<std::int32_t>(0);
+    case WASM_TYPE_I64:
+      return static_cast<std::int64_t>(0);
+    case WASM_TYPE_F32:
+      return 0.0f;
+    case WASM_TYPE_F64:
+      return 0.0;
+    default:
+      throw std::runtime_error("unsupported local type for zero initialisation");
+  }
+}
+
+std::string value_to_string(const Value& value) {
+  return std::visit([](auto&& arg) { return std::to_string(arg); }, value);
+}
+
+} // namespace
 
 WasmVM::WasmVM(const WasmModule& module) : module_(module) {
   initialize_runtime_environment();
@@ -40,7 +79,8 @@ void WasmVM::print_final_results() {
   if (!main_) {
     return;
   }
-  size_t result_count = main_->sig->results.size();
+  std::vector<wasm_type_t> result_types(main_->sig->results.begin(), main_->sig->results.end());
+  size_t result_count = result_types.size();
   if (result_count == 0) {
     return;
   }
@@ -48,35 +88,46 @@ void WasmVM::print_final_results() {
     throw std::runtime_error("Operand stack size does not match expected result count");
   }
 
-  main_->sig->results.reverse();
-  // Print results in order
-  for (auto it = main_->sig->results.begin(); it != main_->sig->results.end(); ++it) {
+  std::vector<Value> results;
+  results.reserve(result_count);
+  for (auto it = result_types.rbegin(); it != result_types.rend(); ++it) {
     TRACE("Result type: %s\n", wasm_type_string(*it));
-    Value value = pop();
-    if ((*it) == WASM_TYPE_F64) {
-      double v = std::get<double>(value);
-      std::cout.precision(6);
-      std::cout << std::fixed << v << std::endl;
+    results.push_back(pop());
+  }
+  std::reverse(results.begin(), results.end());
+
+  std::cout.precision(6);
+  for (size_t i = 0; i < result_count; ++i) {
+    const wasm_type_t type = result_types[i];
+    const Value& value = results[i];
+    if (type == WASM_TYPE_F64) {
+      std::cout << std::fixed << std::get<double>(value) << std::endl;
+    } else if (type == WASM_TYPE_F32) {
+      std::cout << std::fixed << std::get<float>(value) << std::endl;
     } else {
-      // print other types directly
       std::visit([](auto&& arg) { std::cout << arg << std::endl; }, value);
     }
   }
 }
 
 std::vector<Value> WasmVM::build_locals_for(const FuncDecl* f) {
-  std::vector<Value> locals;
-  locals.reserve(f->sig->params.size() + f->num_pure_locals);
-  // Add parameters from the operand stack
-  size_t param_count = f->sig->params.size();
+  const size_t param_count = f->sig->params.size();
   if (sp() < param_count) {
     throw std::runtime_error("Not enough values on the operand stack for function parameters");
   }
 
+  std::vector<Value> locals(param_count + f->num_pure_locals);
+
   for (size_t i = 0; i < param_count; ++i) {
-    locals.push_back(pop());
+    locals[param_count - 1 - i] = pop();
   }
-  std::reverse(locals.begin(), locals.begin() + param_count);
+
+  size_t next_local = param_count;
+  for (const auto& group : f->pure_locals) {
+    for (uint32_t i = 0; i < group.count; ++i) {
+      locals[next_local++] = zero_value_for(group.type);
+    }
+  }
   return locals;
 }
 
@@ -84,30 +135,29 @@ bool WasmVM::invoke(FuncDecl* f) {
   byte* start = f->code_bytes.data();
   byte* end = start + f->code_bytes.size();
   
-  Frame frame = {
-    .func = f,
-    .locals = build_locals_for(f),
-    .pc = {start, start, end},
-    .labels = {},
-    .stack_height_on_entry = sp()
-  };
+  Frame frame{};
+  frame.func = f;
+  frame.locals = build_locals_for(f);
+  frame.pc.start = start;
+  frame.pc.ptr = start;
+  frame.pc.end = end;
+  frame.stack_height_on_entry = sp();
 
-  // push an implicit label for the function body
-  frame.labels.push_back(Label {
-    .pc_begin = start,
-    .pc_end = end,
-    .pc_else = nullptr,
-    .stack_height = sp(),
-    .kind = Label::Kind::Block
-  });
+  Label function_body{};
+  function_body.kind = Label::Kind::Block;
+  function_body.pc_begin = start;
+  function_body.pc_end = end;
+  function_body.pc_else = nullptr;
+  function_body.stack_height = frame.stack_height_on_entry;
+  frame.labels.push_back(function_body);
 
-  // trace local vector values:
-  TRACE("Invoking function with %lu locals\n", frame.locals.size());
+  TRACE("Invoking function with %zu locals\n", frame.locals.size());
   for (size_t i = 0; i < frame.locals.size(); ++i) {
-    std::visit([i](auto&& arg) { TRACE("  local[%lu]: %s\n", i, std::to_string(arg).c_str()); }, frame.locals[i]);
+    const std::string repr = value_to_string(frame.locals[i]);
+    TRACE("  local[%zu]: %s\n", i, repr.c_str());
   }
 
-  call_stack_.push_back(frame);
+  call_stack_.push_back(std::move(frame));
 
   // TODO: implement the function body execution
   while (!call_stack_.empty()) {
@@ -118,8 +168,6 @@ bool WasmVM::invoke(FuncDecl* f) {
 }
 
 void WasmVM::run_op(buffer_t &buf) {
-  const byte* startp = buf.ptr;
-
   // if reach end of buffer, pop the call stack and return
   if (buf.ptr >= buf.end) {
     throw std::runtime_error("Reached end of buffer");
@@ -140,13 +188,15 @@ void WasmVM::run_op(buffer_t &buf) {
       break;
     }
     case WASM_OP_F32_CONST: {
-      auto v = static_cast<float>(RD_U32_RAW());
+      uint32_t raw = RD_U32_RAW();
+      float v = raw_to_f32(raw);
       TRACE("F32_CONST: %f\n", v);
       push(v);
       break;
     }
     case WASM_OP_F64_CONST: {
-      auto v = static_cast<double>(RD_U64_RAW());
+      uint64_t raw = RD_U64_RAW();
+      double v = raw_to_f64(raw);
       TRACE("F64_CONST: %f\n", v);
       push(v);
       break;
@@ -158,8 +208,8 @@ void WasmVM::run_op(buffer_t &buf) {
         throw std::runtime_error("local.get index out of bounds");
       }
       Value local_value = current_frame.locals[local_idx];
-      TRACE("LOCAL_GET: index %u value ", local_idx);
-      std::visit([](auto&& arg) { TRACE("%s\n", std::to_string(arg).c_str()); }, local_value);
+      const std::string repr = value_to_string(local_value);
+      TRACE("LOCAL_GET: index %u value %s\n", local_idx, repr.c_str());
       push(local_value);
       break;
     }
@@ -179,33 +229,42 @@ void WasmVM::run_op(buffer_t &buf) {
       break;
     }
     case WASM_OP_END: {
-      // End of a block, loop, if, or function
-      Frame& current_frame = call_stack_.back();
-      auto block = current_frame.labels.back();
-      current_frame.labels.pop_back();
+      // Close the nearest structured control construct (block/loop/if/function).
+      Frame& fr = call_stack_.back();
+      if (fr.labels.empty()) {
+        throw std::runtime_error("END encountered with no active label");
+      }
+      Label closed = fr.labels.back();
+      fr.labels.pop_back();
 
-      if (current_frame.labels.empty()) {
-        auto last_frame = call_stack_.back();
-        call_stack_.pop_back();
-
-        auto return_count = last_frame.func->sig->results.size();
-        if (sp() < return_count) {
+      // If we just closed the implicit function-body label, we must PRESERVE the function results
+      // BEFORE restoring the operand stack height; otherwise they'd be lost.
+      const bool is_function_end = fr.labels.empty();
+      if (is_function_end) {
+        const size_t retc = fr.func->sig->results.size();
+        if (sp() < retc) {
           throw std::runtime_error("Not enough values on the operand stack for function return");
         }
-        // Save return values
-        std::vector<Value> return_values;
-        for (size_t i = 0; i < return_count; ++i) {
-          return_values.push_back(pop());
-        }
-        std::reverse(return_values.begin(), return_values.end());
-        // Restore operand stack to state before function call
 
-        pop_to(last_frame.stack_height_on_entry);
-        // push return values if any
-        for (auto result : return_values) {
-          push(result);
+        // Grab return values from the top of the stack first.
+        std::vector<Value> rets;
+        rets.reserve(retc);
+        for (size_t i = 0; i < retc; ++i) {
+          rets.push_back(pop());
         }
-        TRACE("Function return with %lu values\n", return_values.size());
+        std::reverse(rets.begin(), rets.end());
+
+        // Restore the caller's operand stack height, pop the frame, then push back returns.
+        pop_to(fr.stack_height_on_entry);
+        call_stack_.pop_back();
+        for (auto& v : rets) {
+          push(v);
+        }
+        TRACE("Function return with %lu values\n", rets.size());
+      } else {
+        // Non-function structured end. In this project, blocks have 0 result arity,
+        // so we simply restore the operand stack height to what it was at block entry.
+        pop_to(closed.stack_height);
       }
       break;
     }
@@ -214,8 +273,8 @@ void WasmVM::run_op(buffer_t &buf) {
         throw std::runtime_error("Not enough values on the operand stack for drop");
       }
       Value dropped = pop();
-      TRACE("DROP: ");
-      std::visit([](auto&& arg) { TRACE("%s\n", std::to_string(arg).c_str()); }, dropped);
+      const std::string repr = value_to_string(dropped);
+      TRACE("DROP: %s\n", repr.c_str());
       break;
     }
     case WASM_OP_SELECT: {
@@ -230,8 +289,8 @@ void WasmVM::run_op(buffer_t &buf) {
       Value val1 = pop();
       bool cond = std::get<std::int32_t>(condition) != 0;
       Value selected = cond ? val1 : val2;
-      TRACE("SELECT: condition %d, selected ", std::get<std::int32_t>(condition));
-      std::visit([](auto&& arg) { TRACE("%s\n", std::to_string(arg).c_str()); }, selected);
+      const std::string repr = value_to_string(selected);
+      TRACE("SELECT: condition %d, selected %s\n", std::get<std::int32_t>(condition), repr.c_str());
       push(selected);
       break;
     }
@@ -295,6 +354,7 @@ void WasmVM::reset_runtime_state() {
   }
 
   operand_stack_.clear();
+  call_stack_.clear();
   prepare_globals_storage();
 }
 

@@ -2,7 +2,10 @@
 
 #include "common.h"
 #include "ir.h"
-#include <span>
+
+#include <cstdint>
+#include <stdexcept>
+#include <variant>
 
 using Value = std::variant<
   std::int32_t,      // i32  (0x7F)
@@ -71,7 +74,14 @@ private:
   std::vector<Value> build_locals_for(const FuncDecl* f);
 
   inline void push(Value v) { operand_stack_.push_back(v); }
-  inline Value pop() { auto v = operand_stack_.back(); operand_stack_.pop_back(); return v; }
+  inline Value pop() {
+    if (operand_stack_.empty()) {
+      throw std::runtime_error("operand stack underflow");
+    }
+    Value v = operand_stack_.back();
+    operand_stack_.pop_back();
+    return v;
+  }
   inline void pop_to(size_t h) { operand_stack_.resize(h); }
   inline size_t sp() const { return operand_stack_.size(); }
 
