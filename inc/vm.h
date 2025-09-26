@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <variant>
+#include <map>
 
 using Value = std::variant<
   std::int32_t,      // i32  (0x7F)
@@ -30,14 +31,19 @@ inline Value make_from(const std::string &s, wasm_type_t type) {
   }
 }
 
+// Runtime structures
 struct Label {
   enum Kind { Block, Loop, If } kind;
-  const byte* pc_begin;   // first instr inside the region (after header)
-  const byte* pc_end;     // first instr after matching 'end'
-  const byte* pc_else;    // first instr after 'else' (nullptr if no else / not-if)
+  const byte* pc_target;  // Loop: begin; Block/If: after end 
+  const byte* pc_else;    // Only for If，otherwise nullptr
   size_t stack_height;    // operand stack height at entry
-  // uint32_t result_arity;  // only 0 in this project
-  // bool is_loop;           // determines where 'br' goes
+};
+
+struct CtrlMeta {
+  Label::Kind kind;
+  const byte* begin;   // address of the block/loop/if opcode
+  const byte* else_pc; // only for if, else nullptr
+  const byte* end;     // address of next instruction after end
 };
 
 
@@ -57,6 +63,7 @@ public:
   ~WasmVM() = default;
 
   void run(std::vector<std::string> mainargs);
+  void pre_indexing(FuncDecl* f);
 
 private:
   void initialize_runtime_environment();
@@ -67,6 +74,7 @@ private:
   void reset_runtime_state();
   bool validate_main_signature(size_t argc) const;
   void push_main_arguments(const std::vector<std::string>& mainargs);
+  void skip_immediate(Opcode_t opcode, buffer_t &buf);
 
   bool invoke(FuncDecl* f);
   void run_op(buffer_t &buf);
@@ -94,4 +102,5 @@ private:
   std::vector<uint32_t> local_table_initial_sizes_;
   uint32_t initial_linear_memory_pages_ = 0;
   FuncDecl* main_ = nullptr;
+  std::unordered_map<const byte*, CtrlMeta> ctrl_map;
 };

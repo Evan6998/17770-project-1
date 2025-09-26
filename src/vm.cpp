@@ -131,6 +131,75 @@ std::vector<Value> WasmVM::build_locals_for(const FuncDecl* f) {
   return locals;
 }
 
+void WasmVM::skip_immediate(Opcode_t opcode, buffer_t &buf) {
+  
+}
+
+void WasmVM::pre_indexing(FuncDecl* f) {
+  ctrl_map.clear();
+  auto ctrl_stack = std::vector<std::pair<const byte*, CtrlMeta>>{};
+  auto& bytes = f->code_bytes;
+  auto buf = buffer_t{bytes.data(), bytes.data(), bytes.data() + bytes.size()};
+  while (buf.ptr < buf.end) {
+    const byte* header = buf.ptr;
+    Opcode_t opcode = RD_OPCODE();
+    switch (opcode) {
+      case WASM_OP_LOOP:
+      case WASM_OP_IF:
+      case WASM_OP_BLOCK: {
+        // MVP only supports the empty blocktype (0x40). Consume it and push a label.
+        uint8_t block_type = RD_BYTE();
+        if (block_type != 0x40) {
+          throw std::runtime_error("non-empty blocktype is not supported");
+        }
+        CtrlMeta meta{};
+        meta.begin = buf.ptr;
+        meta.else_pc = nullptr;
+        meta.end = nullptr; // to be filled when matching END is seen
+        switch (opcode) {
+          case WASM_OP_LOOP:
+            meta.kind = Label::Kind::Loop;
+            break;
+          case WASM_OP_IF:
+            meta.kind = Label::Kind::If;
+            break;
+          case WASM_OP_BLOCK:
+            meta.kind = Label::Kind::Block;
+            break;
+          default:
+            throw std::runtime_error("unreachable");
+        }
+        ctrl_stack.push_back({header, meta});
+        break;
+      }
+      case WASM_OP_ELSE: {
+        if (ctrl_stack.empty() || ctrl_stack.back().second.kind != Label::Kind::If) {
+          throw std::runtime_error("else without matching if");
+        }
+        auto& [if_header, if_meta] = ctrl_stack.back();
+        if_meta.else_pc = buf.ptr;
+        break;
+      }
+      case WASM_OP_END: {
+        if (ctrl_stack.empty()) {
+          throw std::runtime_error("end without matching block/loop/if");
+        }
+        auto& [header, meta] = ctrl_stack.back();
+        ctrl_stack.pop_back();
+        meta.end = buf.ptr;
+        ctrl_map[header] = meta;
+        break;
+      }
+      default:
+        skip_immediate(opcode, buf);
+        break;
+    }
+  }
+  if (!ctrl_stack.empty()) {
+    throw std::runtime_error("unmatched block/loop/if");
+  }
+}
+
 bool WasmVM::invoke(FuncDecl* f) {
   byte* start = f->code_bytes.data();
   byte* end = start + f->code_bytes.size();
@@ -145,8 +214,8 @@ bool WasmVM::invoke(FuncDecl* f) {
 
   Label function_body{};
   function_body.kind = Label::Kind::Block;
-  function_body.pc_begin = start;
-  function_body.pc_end = end;
+  // function_body.pc_begin = start;
+  // function_body.pc_end = end;
   function_body.pc_else = nullptr;
   function_body.stack_height = frame.stack_height_on_entry;
   frame.labels.push_back(function_body);
@@ -213,6 +282,16 @@ void WasmVM::run_op(buffer_t &buf) {
       push(local_value);
       break;
     }
+    case WASM_OP_LOCAL_SET: {
+      auto local_idx = RD_U32();
+      auto frame = call_stack_.back();
+      auto value = pop();
+      if (local_idx >= frame.locals.size()) {
+        throw std::runtime_error("local.set index out of bounds");
+      }
+      frame.locals[local_idx] = value;
+      break;
+    }
     case WASM_OP_BLOCK: {
       // MVP only supports the empty blocktype (0x40). Consume it and push a label.
       uint8_t block_type = RD_BYTE();
@@ -223,12 +302,29 @@ void WasmVM::run_op(buffer_t &buf) {
       Frame& current_frame = call_stack_.back();
       Label block{};
       block.kind = Label::Kind::Block;
-      block.pc_begin = buf.ptr;   // execution continues with the following instruction
-      block.pc_end = nullptr;     // resolved when matching END is seen or by future br setup
+      // block.pc_begin = buf.ptr;   // execution continues with the following instruction
+      // block.pc_end = nullptr;     // resolved when matching END is seen or by future br setup
       block.pc_else = nullptr;
       block.stack_height = sp();
       current_frame.labels.push_back(block);
       TRACE("BLOCK: depth %zu\n", current_frame.labels.size());
+      break;
+    }
+    case WASM_OP_LOOP: {
+      uint8_t block_type = RD_BYTE();
+      if (block_type != 0x40) {
+        throw std::runtime_error("non-empty blocktype is not supported");
+      }
+
+      Frame& current_frame = call_stack_.back();
+      Label loop{};
+      loop.kind = Label::Kind::Loop;
+      // loop.pc_begin = buf.ptr;   // loop bodies start immediately after the header
+      // loop.pc_end = nullptr;
+      loop.pc_else = nullptr;
+      loop.stack_height = sp();
+      current_frame.labels.push_back(loop);
+      TRACE("LOOP: depth %zu\n", current_frame.labels.size());
       break;
     }
     case WASM_OP_F64_ADD: {
