@@ -515,6 +515,9 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       if (!std::holds_alternative<std::int32_t>(addr_val)) {
         throw std::runtime_error("Address for i32.load is not i32");
       }
+      if (std::get<std::int32_t>(addr_val) < 0) {
+        throw std::runtime_error("Address for i32.load is negative");
+      }
       uint32_t addr = static_cast<uint32_t>(std::get<std::int32_t>(addr_val));
       uint32_t effective_addr = addr + offset;
       if (effective_addr + 4 > linear_memory_.size()) {
