@@ -59,6 +59,7 @@ void WasmVM::run(std::vector<std::string> mainargs) {
   }
   catch(const std::exception& e)
   {
+    TRACE("Runtime error: %s\n", e.what());
     printf("!trap\n");
     return;
   }
@@ -584,6 +585,41 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       }
       break;
     }
+    case WASM_OP_RETURN: {
+      Frame& fr = call_stack_.back();
+      const size_t retc = fr.func->sig->results.size();
+      if (sp() < retc) {
+        throw std::runtime_error("Not enough values on the operand stack for function return");
+      }
+
+      // Grab return values from the top of the stack first.
+      std::vector<Value> rets;
+      rets.reserve(retc);
+      for (size_t i = 0; i < retc; ++i) {
+        rets.push_back(pop());
+      }
+      std::reverse(rets.begin(), rets.end());
+
+      // Restore the caller's operand stack height, pop the frame, then push back returns.
+      pop_to(fr.stack_height_on_entry);
+      call_stack_.pop_back();
+      TRACE("RETURN: popping function frame, returning %lu values\n", rets.size());
+      for (auto& v : rets) {
+        push(v);
+      }
+      TRACE("Function return with %lu values\n", rets.size());
+      break;
+    }
+    case WASM_OP_CALL: {
+      auto func_idx = RD_U32();
+      if (func_idx >= function_instances_.size()) {
+        throw std::runtime_error("call function index out of bounds");
+      }
+      FuncDecl f = function_instances_[func_idx];
+      TRACE("CALL: function index %u\n", func_idx);
+      invoke(&f);
+      break;
+    }
     case WASM_OP_DROP: {
       if (sp() < 1) {
         throw std::runtime_error("Not enough values on the operand stack for drop");
@@ -737,6 +773,14 @@ void WasmVM::prepare_data_segments() {
   }
 }
 
+void WasmVM::prepare_function_instances() {
+  function_instances_.clear();
+  function_instances_.reserve(module_.Funcs().size());
+  for (const auto func : module_.Funcs()) {
+    function_instances_.push_back(func);
+  }
+}
+
 void WasmVM::reset_runtime_state() {
   linear_memory_.assign(initial_linear_memory_pages_ * WASM_PAGE_SIZE, 0);
 
@@ -750,6 +794,7 @@ void WasmVM::reset_runtime_state() {
   call_stack_.clear();
   prepare_globals_storage();
   prepare_data_segments();
+  prepare_function_instances();
 }
 
 bool WasmVM::validate_main_signature(size_t argc) const {

@@ -65,6 +65,7 @@ private:
   void resolve_main_entrypoint();
   void prepare_globals_storage();
   void prepare_data_segments();
+  void prepare_function_instances();
   void reset_runtime_state();
   bool validate_main_signature(size_t argc) const;
   void push_main_arguments(const std::vector<std::string>& mainargs);
@@ -96,6 +97,7 @@ private:
   WasmModule module_;
   std::vector<byte> linear_memory_;
   std::vector<std::vector<FuncDecl*>> table_instances_;
+  std::vector<FuncDecl> function_instances_;
   std::vector<Value> global_values_;
   std::vector<Value> operand_stack_;
   std::vector<Frame> call_stack_;
