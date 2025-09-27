@@ -369,7 +369,7 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
     case WASM_OP_LOCAL_TEE: {
       auto local_idx = RD_U32();
       auto& frame = call_stack_.back();
-      auto value = top();
+      auto value = pop();
       if (local_idx >= frame.locals.size()) {
         throw std::runtime_error("local.tee index out of bounds");
       }
@@ -441,7 +441,7 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
         } else {
           // No else branch, skip to the end of the if
           buf.ptr = if_label.pc_target;
-          current_frame.labels.pop_back(); // pop the if label
+          // current_frame.labels.pop_back(); // pop the if label
           TRACE("condition false, skipping to END\n");
         }
       }
@@ -693,6 +693,8 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       }
       Label& target_label = fr.labels[fr.labels.size() - label_idx - 1];
       // trace label kind
+      fr.labels.resize(fr.labels.size() - label_idx); // pop labels up to and including target
+      operand_stack_.resize(target_label.stack_height); // restore operand stack height
       buf.ptr = target_label.pc_target;
       TRACE("BR to label index %u of kind %d (total depth %zu)\n", label_idx, static_cast<int>(target_label.kind), fr.labels.size());
       break;
