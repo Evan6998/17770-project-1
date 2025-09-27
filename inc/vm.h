@@ -41,7 +41,7 @@ struct Label {
 
 struct CtrlMeta {
   Label::Kind kind;
-  const byte* begin;   // address of the first instruction inside the block/loop/if
+  // const byte* begin;   // address of the first instruction inside the block/loop/if
   const byte* else_pc; // only for if, else nullptr
   const byte* end;     // address of next instruction after end
 };
@@ -77,7 +77,7 @@ private:
   void skip_immediate(Opcode_t opcode, buffer_t &buf);
 
   bool invoke(FuncDecl* f);
-  void run_op(buffer_t &buf);
+  void run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ctrl_map);
   void print_final_results();
   std::vector<Value> build_locals_for(const FuncDecl* f);
 

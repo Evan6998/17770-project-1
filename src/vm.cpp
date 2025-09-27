@@ -208,7 +208,7 @@ std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
   std::unordered_map<const byte*, CtrlMeta> ctrl_map;
   auto ctrl_stack = std::vector<std::pair<const byte*, CtrlMeta>>{};
   // push implicit ctrl_meta for function body
-  ctrl_stack.push_back({f->code_bytes.data(), CtrlMeta{Label::Kind::Block, f->code_bytes.data(), nullptr, f->code_bytes.data() + f->code_bytes.size()}});
+  ctrl_stack.push_back({f->code_bytes.data(), CtrlMeta{Label::Kind::Block, nullptr, f->code_bytes.data() + f->code_bytes.size()}});
   const auto& bytes = f->code_bytes;
   auto buf = buffer_t{bytes.data(), bytes.data(), bytes.data() + bytes.size()};
   while (buf.ptr < buf.end) {
@@ -225,7 +225,7 @@ std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
           throw std::runtime_error("non-empty blocktype is not supported");
         }
         CtrlMeta meta{};
-        meta.begin = buf.ptr;
+        // meta.begin = buf.ptr;
         meta.else_pc = nullptr;
         meta.end = nullptr; // to be filled when matching END is seen
         switch (opcode) {
@@ -301,21 +301,22 @@ bool WasmVM::invoke(FuncDecl* f) {
   }
 
   call_stack_.push_back(std::move(frame));
+  TRACE("Pushed function frame onto call stack\n");
 
   // TODO: implement the function body execution
   while (!call_stack_.empty()) {
     auto& current_frame = call_stack_.back();
-    run_op(current_frame.pc);
+    run_op(current_frame.pc, ctrl_map);
   }
   return true;
 }
 
-void WasmVM::run_op(buffer_t &buf) {
+void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ctrl_map) {
   // if reach end of buffer, pop the call stack and return
   if (buf.ptr >= buf.end) {
     throw std::runtime_error("Reached end of buffer");
   }
-
+  auto header = buf.ptr;
   Opcode_t opcode = RD_OPCODE();
   switch (opcode) {
     case WASM_OP_I32_CONST: {
@@ -358,12 +359,13 @@ void WasmVM::run_op(buffer_t &buf) {
     }
     case WASM_OP_LOCAL_SET: {
       auto local_idx = RD_U32();
-      auto frame = call_stack_.back();
+      auto& frame = call_stack_.back();
       auto value = pop();
       if (local_idx >= frame.locals.size()) {
         throw std::runtime_error("local.set index out of bounds");
       }
       frame.locals[local_idx] = value;
+      TRACE("LOCAL_SET: index %u value %s\n", local_idx, value_to_string(value).c_str());
       break;
     }
     case WASM_OP_BLOCK: {
@@ -377,7 +379,7 @@ void WasmVM::run_op(buffer_t &buf) {
       Label block{};
       block.kind = Label::Kind::Block;
       // block.pc_begin = buf.ptr;   // execution continues with the following instruction
-      // block.pc_end = nullptr;     // resolved when matching END is seen or by future br setup
+      block.pc_target = ctrl_map.at(header).end;
       block.pc_else = nullptr;
       block.stack_height = sp();
       current_frame.labels.push_back(block);
@@ -393,12 +395,83 @@ void WasmVM::run_op(buffer_t &buf) {
       Frame& current_frame = call_stack_.back();
       Label loop{};
       loop.kind = Label::Kind::Loop;
-      // loop.pc_begin = buf.ptr;   // loop bodies start immediately after the header
-      // loop.pc_end = nullptr;
+      loop.pc_target = ctrl_map.at(header).end;
       loop.pc_else = nullptr;
       loop.stack_height = sp();
       current_frame.labels.push_back(loop);
       TRACE("LOOP: depth %zu\n", current_frame.labels.size());
+      break;
+    }
+    case WASM_OP_IF: {
+      auto block_type = RD_BYTE();
+      if (block_type != 0x40) {
+        throw std::runtime_error("non-empty blocktype is not supported");
+      }
+      if (sp() < 1) {
+        throw std::runtime_error("Not enough values on the operand stack for if condition");
+      }
+
+      Frame& current_frame = call_stack_.back();
+      Label if_label{};
+      if_label.kind = Label::Kind::If;
+      if_label.pc_target = ctrl_map.at(header).end;
+      if_label.pc_else = nullptr;
+      if_label.stack_height = sp();
+      current_frame.labels.push_back(if_label);
+      
+      Value condition = pop();
+      if (!std::holds_alternative<std::int32_t>(condition)) {
+        throw std::runtime_error("Condition for if is not i32");
+      }
+      bool cond = std::get<std::int32_t>(condition) != 0;
+      if (!cond) {
+        if (ctrl_map.at(header).else_pc) {
+          buf.ptr = ctrl_map.at(header).else_pc; // enter the 'else' branch
+          TRACE("condition false, entering ELSE branch\n");
+        } else {
+          // No else branch, skip to the end of the if
+          buf.ptr = ctrl_map.at(header).end;
+          current_frame.labels.pop_back(); // pop the if label
+          TRACE("condition false, skipping to END\n");
+        }
+      }
+      TRACE("IF: condition %d, depth %zu\n", std::get<std::int32_t>(condition), current_frame.labels.size());
+      break;
+    }
+    case WASM_OP_ELSE: {
+      if (call_stack_.empty()) {
+        throw std::runtime_error("Empty call stack on else");
+      }
+      auto& current_frame = call_stack_.back();
+      if (current_frame.labels.empty() || current_frame.labels.back().kind != Label::Kind::If) {
+        throw std::runtime_error("else without matching if");
+      }
+      auto& if_label = current_frame.labels.back();
+      buf.ptr = if_label.pc_target; // skip to the end
+      current_frame.labels.pop_back(); // pop the if label
+      TRACE("ELSE\n");
+      break;
+    }
+    case WASM_OP_I32_LT_S: {
+      if (sp() < 2) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.lt_s");
+      }
+      Value val2 = pop();
+      Value val1 = pop();
+      auto result = std::get<std::int32_t>(val1) < std::get<std::int32_t>(val2) ? 1 : 0;
+      TRACE("I32_LT_S: %d < %d = %d\n", std::get<std::int32_t>(val1), std::get<std::int32_t>(val2), result);
+      push(static_cast<Value>(result));
+      break;
+    }
+    case WASM_OP_I32_SUB: {
+      if (sp() < 2) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.sub");
+      }
+      Value val2 = pop();
+      Value val1 = pop();
+      auto result = std::get<std::int32_t>(val1) - std::get<std::int32_t>(val2);
+      TRACE("I32_SUB: %d - %d = %d\n", std::get<std::int32_t>(val1), std::get<std::int32_t>(val2), result);
+      push(static_cast<Value>(result));
       break;
     }
     case WASM_OP_F64_ADD: {
@@ -448,6 +521,7 @@ void WasmVM::run_op(buffer_t &buf) {
         // Restore the caller's operand stack height, pop the frame, then push back returns.
         pop_to(fr.stack_height_on_entry);
         call_stack_.pop_back();
+        TRACE("Popping function frame, returning %lu values\n", rets.size());
         for (auto& v : rets) {
           push(v);
         }
