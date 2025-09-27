@@ -33,7 +33,7 @@ inline Value make_from(const std::string &s, wasm_type_t type) {
 
 // Runtime structures
 struct Label {
-  enum Kind { Block, Loop, If } kind;
+  enum Kind { Implicit, Block, Loop, If } kind;
   const byte* pc_target;  // Loop: begin; Block/If: after end 
   const byte* pc_else;    // Only for If，otherwise nullptr
   size_t stack_height;    // operand stack height at entry

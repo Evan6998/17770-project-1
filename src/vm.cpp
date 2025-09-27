@@ -212,9 +212,9 @@ std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
   const auto& bytes = f->code_bytes;
   auto buf = buffer_t{bytes.data(), bytes.data(), bytes.data() + bytes.size()};
   while (buf.ptr < buf.end) {
-    const byte* header = buf.ptr;
+    const byte* opcode_ptr = buf.ptr;
     Opcode_t opcode = RD_OPCODE();
-    TRACE("Pre-indexing opcode: %s at offset %ld\n", opcode_table[opcode].mnemonic, header - bytes.data());
+    TRACE("Pre-indexing opcode: %s at offset %ld\n", opcode_table[opcode].mnemonic, opcode_ptr - bytes.data());
     switch (opcode) {
       case WASM_OP_LOOP:
       case WASM_OP_IF:
@@ -241,7 +241,7 @@ std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
           default:
             throw std::runtime_error("unreachable");
         }
-        ctrl_stack.push_back({header, meta});
+        ctrl_stack.push_back({opcode_ptr, meta});
         break;
       }
       case WASM_OP_ELSE: {
@@ -256,10 +256,10 @@ std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
         if (ctrl_stack.empty()) {
           throw std::runtime_error("end without matching block/loop/if");
         }
-        auto& [header, meta] = ctrl_stack.back();
+        auto& [ctrl_header, meta] = ctrl_stack.back();
         ctrl_stack.pop_back();
-        meta.end = buf.ptr;
-        ctrl_map[header] = meta;
+        meta.end = opcode_ptr;
+        ctrl_map[ctrl_header] = meta;
         break;
       }
       default:
@@ -287,7 +287,7 @@ bool WasmVM::invoke(FuncDecl* f) {
   frame.stack_height_on_entry = sp();
 
   Label function_body{};
-  function_body.kind = Label::Kind::Block;
+  function_body.kind = Label::Kind::Implicit;
   // function_body.pc_begin = start;
   // function_body.pc_end = end;
   function_body.pc_else = nullptr;
@@ -317,6 +317,8 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
     throw std::runtime_error("Reached end of buffer");
   }
   auto header = buf.ptr;
+  // trace value of buf.ptr
+  // TRACE("Running to: %p\n", (void*)buf.ptr);
   Opcode_t opcode = RD_OPCODE();
   switch (opcode) {
     case WASM_OP_I32_CONST: {
@@ -395,7 +397,7 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       Frame& current_frame = call_stack_.back();
       Label loop{};
       loop.kind = Label::Kind::Loop;
-      loop.pc_target = ctrl_map.at(header).end;
+      loop.pc_target = buf.ptr;   // execution continues with the following instruction
       loop.pc_else = nullptr;
       loop.stack_height = sp();
       current_frame.labels.push_back(loop);
@@ -430,7 +432,7 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
           TRACE("condition false, entering ELSE branch\n");
         } else {
           // No else branch, skip to the end of the if
-          buf.ptr = ctrl_map.at(header).end;
+          buf.ptr = if_label.pc_target;
           current_frame.labels.pop_back(); // pop the if label
           TRACE("condition false, skipping to END\n");
         }
@@ -460,6 +462,27 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       Value val1 = pop();
       auto result = std::get<std::int32_t>(val1) < std::get<std::int32_t>(val2) ? 1 : 0;
       TRACE("I32_LT_S: %d < %d = %d\n", std::get<std::int32_t>(val1), std::get<std::int32_t>(val2), result);
+      push(static_cast<Value>(result));
+      break;
+    }
+    case WASM_OP_I32_EQZ: {
+      if (sp() < 1) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.eqz");
+      }
+      Value val = pop();
+      auto result = std::get<std::int32_t>(val) == 0 ? 1 : 0;
+      push(static_cast<Value>(result));
+      TRACE("I32_EQZ: %d == 0 = %d\n", std::get<std::int32_t>(val), result);
+      break;
+    }
+    case WASM_OP_I32_ADD: {
+      if (sp() < 2) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.add");
+      }
+      Value val2 = pop();
+      Value val1 = pop();
+      auto result = std::get<std::int32_t>(val1) + std::get<std::int32_t>(val2);
+      TRACE("I32_ADD: %d + %d = %d\n", std::get<std::int32_t>(val1), std::get<std::int32_t>(val2), result);
       push(static_cast<Value>(result));
       break;
     }
@@ -498,7 +521,7 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       if (fr.labels.empty()) {
         throw std::runtime_error("END encountered with no active label");
       }
-      Label closed = fr.labels.back();
+      Label& closed = fr.labels.back();
       fr.labels.pop_back();
 
       // If we just closed the implicit function-body label, we must PRESERVE the function results
@@ -557,6 +580,45 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       const std::string repr = value_to_string(selected);
       TRACE("SELECT: condition %d, selected %s\n", std::get<std::int32_t>(condition), repr.c_str());
       push(selected);
+      break;
+    }
+    case WASM_OP_BR: {
+      auto label_idx = RD_U32();
+      Frame& fr = call_stack_.back();
+      // trace these indexes
+      if (label_idx >= fr.labels.size()) {
+        throw std::runtime_error("br label index out of bounds");
+      }
+      Label& target_label = fr.labels[fr.labels.size() - label_idx - 1];
+      // trace label kind
+      buf.ptr = target_label.pc_target;
+      TRACE("BR to label index %u of kind %d (total depth %zu)\n", label_idx, static_cast<int>(target_label.kind), fr.labels.size());
+      break;
+    }
+    case WASM_OP_BR_IF: {
+      auto label_idx = RD_U32();
+      if (sp() < 1) {
+        throw std::runtime_error("Not enough values on the operand stack for br_if");
+      }
+      auto cond = pop();
+      TRACE("BR_IF condition %d\n", std::get<std::int32_t>(cond));
+      if (!std::holds_alternative<std::int32_t>(cond)) {
+        throw std::runtime_error("Condition for br_if is not i32");
+      }
+      if (std::get<std::int32_t>(cond) != 0) {
+        Frame& fr = call_stack_.back();
+        if (label_idx >= fr.labels.size()) {
+          throw std::runtime_error("br_if label index out of bounds");
+        }
+        Label& target_label = fr.labels[fr.labels.size() - label_idx - 1];
+        // trace value of buf.ptr
+        TRACE("BR_IF to buf.ptr %p\n", (void*)buf.ptr);
+        buf.ptr = target_label.pc_target;
+        fr.labels.pop_back(); // pop labels up to and including target
+        TRACE("BR_IF to label index %u of kind %d (total depth %zu)\n", label_idx, static_cast<int>(target_label.kind), fr.labels.size());
+      } else {
+        TRACE("BR_IF not taken\n");
+      }
       break;
     }
 
