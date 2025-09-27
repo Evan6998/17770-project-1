@@ -41,7 +41,7 @@ struct Label {
 
 struct CtrlMeta {
   Label::Kind kind;
-  const byte* begin;   // address of the block/loop/if opcode
+  const byte* begin;   // address of the first instruction inside the block/loop/if
   const byte* else_pc; // only for if, else nullptr
   const byte* end;     // address of next instruction after end
 };
@@ -63,7 +63,7 @@ public:
   ~WasmVM() = default;
 
   void run(std::vector<std::string> mainargs);
-  void pre_indexing(FuncDecl* f);
+  std::unordered_map<const byte*, CtrlMeta>  pre_indexing(FuncDecl* f);
 
 private:
   void initialize_runtime_environment();
@@ -102,5 +102,4 @@ private:
   std::vector<uint32_t> local_table_initial_sizes_;
   uint32_t initial_linear_memory_pages_ = 0;
   FuncDecl* main_ = nullptr;
-  std::unordered_map<const byte*, CtrlMeta> ctrl_map;
 };

@@ -132,17 +132,89 @@ std::vector<Value> WasmVM::build_locals_for(const FuncDecl* f) {
 }
 
 void WasmVM::skip_immediate(Opcode_t opcode, buffer_t &buf) {
-  
+  switch (opcode) {
+    case WASM_OP_BLOCK:
+    case WASM_OP_LOOP:
+    case WASM_OP_IF: {
+      RD_BYTE();
+      break;
+    }
+    case WASM_OP_BR:
+    case WASM_OP_BR_IF:
+    case WASM_OP_CALL:
+    case WASM_OP_LOCAL_GET:
+    case WASM_OP_LOCAL_SET:
+    case WASM_OP_LOCAL_TEE:
+    case WASM_OP_GLOBAL_GET:
+    case WASM_OP_GLOBAL_SET:
+    case WASM_OP_MEMORY_SIZE:
+    case WASM_OP_MEMORY_GROW: {
+      RD_U32();
+      break;
+    }
+    case WASM_OP_CALL_INDIRECT: {
+      RD_U32();
+      RD_U32();
+      break;
+    }
+    case WASM_OP_BR_TABLE: {
+      uint32_t target_count = RD_U32();
+      for (uint32_t i = 0; i < target_count; ++i) {
+        RD_U32();
+      }
+      RD_U32();
+      break;
+    }
+    case WASM_OP_I32_LOAD:
+    case WASM_OP_I64_LOAD:
+    case WASM_OP_F32_LOAD:
+    case WASM_OP_F64_LOAD:
+    case WASM_OP_I32_LOAD8_S:
+    case WASM_OP_I32_LOAD8_U:
+    case WASM_OP_I32_LOAD16_S:
+    case WASM_OP_I32_LOAD16_U:
+    case WASM_OP_I32_STORE:
+    case WASM_OP_I64_STORE:
+    case WASM_OP_F32_STORE:
+    case WASM_OP_F64_STORE:
+    case WASM_OP_I32_STORE8:
+    case WASM_OP_I32_STORE16: {
+      RD_U32();
+      RD_U32();
+      break;
+    }
+    case WASM_OP_I32_CONST: {
+      RD_I32();
+      break;
+    }
+    case WASM_OP_I64_CONST: {
+      RD_I64();
+      break;
+    }
+    case WASM_OP_F32_CONST: {
+      RD_U32_RAW();
+      break;
+    }
+    case WASM_OP_F64_CONST: {
+      RD_U64_RAW();
+      break;
+    }
+    default:
+      break;
+  }
 }
 
-void WasmVM::pre_indexing(FuncDecl* f) {
-  ctrl_map.clear();
+std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
+  std::unordered_map<const byte*, CtrlMeta> ctrl_map;
   auto ctrl_stack = std::vector<std::pair<const byte*, CtrlMeta>>{};
-  auto& bytes = f->code_bytes;
+  // push implicit ctrl_meta for function body
+  ctrl_stack.push_back({f->code_bytes.data(), CtrlMeta{Label::Kind::Block, f->code_bytes.data(), nullptr, f->code_bytes.data() + f->code_bytes.size()}});
+  const auto& bytes = f->code_bytes;
   auto buf = buffer_t{bytes.data(), bytes.data(), bytes.data() + bytes.size()};
   while (buf.ptr < buf.end) {
     const byte* header = buf.ptr;
     Opcode_t opcode = RD_OPCODE();
+    TRACE("Pre-indexing opcode: %s at offset %ld\n", opcode_table[opcode].mnemonic, header - bytes.data());
     switch (opcode) {
       case WASM_OP_LOOP:
       case WASM_OP_IF:
@@ -198,9 +270,11 @@ void WasmVM::pre_indexing(FuncDecl* f) {
   if (!ctrl_stack.empty()) {
     throw std::runtime_error("unmatched block/loop/if");
   }
+  return ctrl_map;
 }
 
 bool WasmVM::invoke(FuncDecl* f) {
+  auto ctrl_map = pre_indexing(f);
   byte* start = f->code_bytes.data();
   byte* end = start + f->code_bytes.size();
   
