@@ -526,6 +526,17 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       TRACE("I32_LOAD: align %u offset %u addr %u (eff %u) => %d\n", align, offset, addr, effective_addr, std::get<std::int32_t>(top()));
       break;
     }
+    case WASM_OP_I32_EQ: {
+      if (sp() < 2) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.eq");
+      }
+      Value val2 = pop();
+      Value val1 = pop();
+      auto result = std::get<std::int32_t>(val1) == std::get<std::int32_t>(val2) ? 1 : 0;
+      TRACE("I32_EQ: %d == %d = %d\n", std::get<std::int32_t>(val1), std::get<std::int32_t>(val2), result);
+      push(static_cast<Value>(result));
+      break;
+    }
     case WASM_OP_F64_ADD: {
       if (sp() < 2) {
         throw std::runtime_error("Not enough values on the operand stack for f64.add");
