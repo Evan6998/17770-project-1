@@ -86,24 +86,27 @@ static uint32_t decode_const_off_expr(buffer_t &buf, Opcode_t &opcode) {
 }
 
 // TODO: Init exprs (just return bytes right now)
-static bytearr decode_init_expr(buffer_t &buf) {
+static Value decode_init_expr(buffer_t &buf) {
   const byte* startp = buf.ptr;
   Opcode_t opcode = RD_OPCODE();
+  Value v;
   switch (opcode) {
     case WASM_OP_I32_CONST: {
-      RD_I32();
+      v = RD_I32();
       break;
     }
     case WASM_OP_I64_CONST: {
-      int64_t v = RD_I64();
+      v = RD_I64();
       break;
     }
     case WASM_OP_F32_CONST: {
-      RD_U32_RAW();
+      uint32_t raw = RD_U32_RAW();
+      v = raw_to_f32(raw);
       break;
     }
     case WASM_OP_F64_CONST: {
-      RD_U64_RAW();
+      uint64_t raw = RD_U64_RAW();
+      v = raw_to_f64(raw);
       break;
     }
 
@@ -117,7 +120,7 @@ static bytearr decode_init_expr(buffer_t &buf) {
     throw std::runtime_error("Malformed end in init_expr");
   }
   const byte* endp = buf.ptr;
-  return bytearr(startp, endp);
+  return v;
 }
 
 
@@ -365,7 +368,7 @@ void WasmModule::decode_global_section(buffer_t &buf, uint32_t len) {
   uint32_t num_globs = RD_U32();
   for (uint32_t i = 0; i < num_globs; i++) {
     GlobalDecl global = read_globaltype(buf);
-    global.init_expr_bytes = decode_init_expr(buf);
+    global.init_value = decode_init_expr(buf);
     this->globals.push_back(global);
   }
 }

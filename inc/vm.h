@@ -8,13 +8,6 @@
 #include <variant>
 #include <map>
 
-using Value = std::variant<
-  std::int32_t,      // i32  (0x7F)
-  std::int64_t,      // i64  (0x7E)
-  float,             // f32  (0x7D)
-  double            // f64  (0x7C)
->;
-
 /* Create a Value from a string and type */
 inline Value make_from(const std::string &s, wasm_type_t type) {
   switch (type) {
@@ -71,6 +64,7 @@ private:
   void cache_table_layout();
   void resolve_main_entrypoint();
   void prepare_globals_storage();
+  void prepare_data_segments();
   void reset_runtime_state();
   bool validate_main_signature(size_t argc) const;
   void push_main_arguments(const std::vector<std::string>& mainargs);
@@ -82,6 +76,12 @@ private:
   std::vector<Value> build_locals_for(const FuncDecl* f);
 
   inline void push(Value v) { operand_stack_.push_back(v); }
+  inline Value top() {
+    if (operand_stack_.empty()) {
+      throw std::runtime_error("operand stack underflow");
+    }
+    return operand_stack_.back();
+  }
   inline Value pop() {
     if (operand_stack_.empty()) {
       throw std::runtime_error("operand stack underflow");

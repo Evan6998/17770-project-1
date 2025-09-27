@@ -21,6 +21,25 @@ typedef struct {
 } buffer_t;
 /***************/
 
+using Value = std::variant<
+  std::int32_t,      // i32  (0x7F)
+  std::int64_t,      // i64  (0x7E)
+  float,             // f32  (0x7D)
+  double            // f64  (0x7C)
+>;
+
+inline float raw_to_f32(uint32_t raw) {
+  float value;
+  std::memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
+inline double raw_to_f64(uint64_t raw) {
+  double value;
+  std::memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
 extern int g_threads;
 /*** Global trace/err/disassemble flags and macros. ***/
 #define TRACE(...) do { if(g_trace) fprintf(stderr, __VA_ARGS__); } while(0)

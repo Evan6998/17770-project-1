@@ -108,7 +108,7 @@ struct TableDecl {
 struct GlobalDecl {
   wasm_type_t type;
   unsigned is_mutable : 1;
-  bytearr init_expr_bytes;
+  Value init_value;
 };
 
 
@@ -275,6 +275,7 @@ class WasmModule {
     inline std::deque <GlobalDecl> &Globals() { return this->globals; }
     inline std::list  <ExportDecl> &Exports() { return this->exports; }
     inline std::list  <ElemDecl> &Elems() { return this->elems; }
+    inline std::list  <DataDecl> &Datas() { return this->datas; }
     
     /* Const Section Accessors */
     inline const std::deque <GlobalDecl> &Globals() const { return this->globals; }

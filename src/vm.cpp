@@ -10,17 +10,6 @@
 
 namespace {
 
-float raw_to_f32(uint32_t raw) {
-  float value;
-  std::memcpy(&value, &raw, sizeof(value));
-  return value;
-}
-
-double raw_to_f64(uint64_t raw) {
-  double value;
-  std::memcpy(&value, &raw, sizeof(value));
-  return value;
-}
 
 Value zero_value_for(wasm_type_t type) {
   switch (type) {
@@ -64,8 +53,14 @@ void WasmVM::run(std::vector<std::string> mainargs) {
 
   push_main_arguments(mainargs);
 
-  if (!invoke(main_)) {
-    ERR("failed to invoke main function\n");
+  try
+  {
+    invoke(main_);
+  }
+  catch(const std::exception& e)
+  {
+    printf("!trap\n");
+    return;
   }
 
   print_final_results();
@@ -370,6 +365,18 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       TRACE("LOCAL_SET: index %u value %s\n", local_idx, value_to_string(value).c_str());
       break;
     }
+    case WASM_OP_LOCAL_TEE: {
+      auto local_idx = RD_U32();
+      auto& frame = call_stack_.back();
+      auto value = top();
+      if (local_idx >= frame.locals.size()) {
+        throw std::runtime_error("local.tee index out of bounds");
+      }
+      frame.locals[local_idx] = value;
+      push(value);
+      TRACE("LOCAL_TEE: index %u value %s\n", local_idx, value_to_string(value).c_str());
+      break;
+    }
     case WASM_OP_BLOCK: {
       // MVP only supports the empty blocktype (0x40). Consume it and push a label.
       uint8_t block_type = RD_BYTE();
@@ -497,6 +504,27 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       push(static_cast<Value>(result));
       break;
     }
+    case WASM_OP_I32_LOAD: {
+      uint32_t align = RD_U32();
+      uint32_t offset = RD_U32();
+      if (sp() < 1) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.load");
+      }
+      Value addr_val = pop();
+      if (!std::holds_alternative<std::int32_t>(addr_val)) {
+        throw std::runtime_error("Address for i32.load is not i32");
+      }
+      uint32_t addr = static_cast<uint32_t>(std::get<std::int32_t>(addr_val));
+      uint32_t effective_addr = addr + offset;
+      if (effective_addr + 4 > linear_memory_.size()) {
+        throw std::runtime_error("i32.load address out of bounds");
+      }
+      uint32_t loaded = 0;
+      std::memcpy(&loaded, &linear_memory_[effective_addr], sizeof(int32_t));
+      push(static_cast<Value>(static_cast<std::int32_t>(loaded)));
+      TRACE("I32_LOAD: align %u offset %u addr %u (eff %u) => %d\n", align, offset, addr, effective_addr, std::get<std::int32_t>(top()));
+      break;
+    }
     case WASM_OP_F64_ADD: {
       if (sp() < 2) {
         throw std::runtime_error("Not enough values on the operand stack for f64.add");
@@ -621,6 +649,27 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       }
       break;
     }
+    case WASM_OP_GLOBAL_GET: {
+      auto global_idx = RD_U32();
+      if (global_idx >= global_values_.size()) {
+        throw std::runtime_error("global.get index out of bounds");
+      }
+      Value global_value = global_values_[global_idx];
+      const std::string repr = value_to_string(global_value);
+      TRACE("GLOBAL_GET: index %u value %s\n", global_idx, repr.c_str());
+      push(global_value);
+      break;
+    }
+    case WASM_OP_GLOBAL_SET: {
+      auto global_idx = RD_U32();
+      auto value = pop();
+      if (global_idx >= global_values_.size()) {
+        throw std::runtime_error("global.set index out of bounds");
+      }
+      global_values_[global_idx] = value;
+      TRACE("GLOBAL_SET: index %u value %s\n", global_idx, value_to_string(value).c_str());
+      break;
+    }
 
     default:
       ERR("Unknown init expr opcode: %x(%s)\n", opcode, opcode_table[opcode].mnemonic);
@@ -634,7 +683,6 @@ void WasmVM::initialize_runtime_environment() {
   cache_linear_memory_layout();
   cache_table_layout();
   resolve_main_entrypoint();
-  reset_runtime_state();
 }
 
 void WasmVM::cache_linear_memory_layout() {
@@ -668,7 +716,25 @@ void WasmVM::resolve_main_entrypoint() {
 void WasmVM::prepare_globals_storage() {
   global_values_.clear();
   global_values_.reserve(module_.Globals().size());
-  // TODO: populate the globals once constant-expr evaluation is implemented.
+  for (const auto& glob : module_.Globals()) {
+    global_values_.push_back(glob.init_value);
+  }
+  // trace all values in global_values_
+  TRACE("Number of globals: %zu\n", global_values_.size());
+  for (size_t i = 0; i < global_values_.size(); ++i) {
+    const std::string repr = value_to_string(global_values_[i]);
+    TRACE("  global[%zu]: %s\n", i, repr.c_str());
+  }
+}
+
+void WasmVM::prepare_data_segments() {
+  for (const auto& seg : module_.Datas()) {
+    uint32_t offset = seg.mem_offset;
+    if (offset + seg.bytes.size() > linear_memory_.size()) {
+      throw std::runtime_error("Data segment does not fit in linear memory");
+    }
+    std::memcpy(&linear_memory_[offset], seg.bytes.data(), seg.bytes.size());
+  }
 }
 
 void WasmVM::reset_runtime_state() {
@@ -683,6 +749,7 @@ void WasmVM::reset_runtime_state() {
   operand_stack_.clear();
   call_stack_.clear();
   prepare_globals_storage();
+  prepare_data_segments();
 }
 
 bool WasmVM::validate_main_signature(size_t argc) const {
