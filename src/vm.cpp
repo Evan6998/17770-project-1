@@ -529,6 +529,30 @@ void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ct
       TRACE("I32_LOAD: align %u offset %u addr %u (eff %u) => %d\n", align, offset, addr, effective_addr, std::get<std::int32_t>(top()));
       break;
     }
+    case WASM_OP_I32_STORE: {
+      uint32_t align = RD_U32();
+      uint32_t offset = RD_U32();
+      if (sp() < 2) {
+        throw std::runtime_error("Not enough values on the operand stack for i32.store");
+      }
+      Value val = pop();
+      Value addr_val = pop();
+      if (!std::holds_alternative<std::int32_t>(addr_val)) {
+        throw std::runtime_error("Address for i32.store is not i32");
+      }
+      if (std::get<std::int32_t>(addr_val) < 0) {
+        throw std::runtime_error("Address for i32.store is negative");
+      }
+      uint32_t addr = static_cast<uint32_t>(std::get<std::int32_t>(addr_val));
+      uint32_t effective_addr = addr + offset;
+      if (effective_addr + 4 > linear_memory_.size()) {
+        throw std::runtime_error("i32.store address out of bounds");
+      }
+      uint32_t to_store = static_cast<uint32_t>(std::get<std::int32_t>(val));
+      std::memcpy(&linear_memory_[effective_addr], &to_store, sizeof(int32_t));
+      TRACE("I32_STORE: align %u offset %u addr %u (eff %u) <= %d\n", align, offset, addr, effective_addr, std::get<std::int32_t>(val));
+      break;
+    }
     case WASM_OP_I32_EQ: {
       if (sp() < 2) {
         throw std::runtime_error("Not enough values on the operand stack for i32.eq");
