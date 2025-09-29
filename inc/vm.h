@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <variant>
 #include <map>
+#include <unordered_map>
 
 /* Create a Value from a string and type */
 inline Value make_from(const std::string &s, wasm_type_t type) {
@@ -45,6 +46,7 @@ struct Frame {
   buffer_t pc;
   std::vector<Value> locals;
   std::vector<Label> labels;
+  std::unordered_map<const byte*, CtrlMeta> ctrl_map;
   // to restore on return
   size_t stack_height_on_entry;
 };
@@ -72,7 +74,8 @@ private:
   void skip_immediate(Opcode_t opcode, buffer_t &buf);
 
   bool invoke(FuncDecl* f);
-  void run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ctrl_map);
+  void run_op();
+  void add_frame(FuncDecl* f);
   void print_final_results();
   std::vector<Value> build_locals_for(const FuncDecl* f);
 

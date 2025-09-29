@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_map>
 
 #include "vm.h"
 
@@ -281,6 +282,7 @@ bool WasmVM::invoke(FuncDecl* f) {
   frame.pc.ptr = start;
   frame.pc.end = end;
   frame.stack_height_on_entry = sp();
+  frame.ctrl_map = std::move(ctrl_map);
 
   Label function_body{};
   function_body.kind = Label::Kind::Implicit;
@@ -301,13 +303,18 @@ bool WasmVM::invoke(FuncDecl* f) {
 
   // TODO: implement the function body execution
   while (!call_stack_.empty()) {
-    auto& current_frame = call_stack_.back();
-    run_op(current_frame.pc, ctrl_map);
+    run_op();
   }
   return true;
 }
 
-void WasmVM::run_op(buffer_t &buf, std::unordered_map<const byte*, CtrlMeta> &ctrl_map) {
+void WasmVM::run_op() {
+  if (call_stack_.empty()) {
+    throw std::runtime_error("Call stack underflow");
+  }
+  Frame& frame = call_stack_.back();
+  buffer_t &buf = frame.pc;
+  auto &ctrl_map = frame.ctrl_map;
   // if reach end of buffer, pop the call stack and return
   if (buf.ptr >= buf.end) {
     throw std::runtime_error("Reached end of buffer");
