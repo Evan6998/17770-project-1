@@ -68,6 +68,7 @@ private:
   void prepare_globals_storage();
   void prepare_data_segments();
   void prepare_function_instances();
+  void prepare_element_segments();
   void reset_runtime_state();
   bool validate_main_signature(size_t argc) const;
   void push_main_arguments(const std::vector<std::string>& mainargs);

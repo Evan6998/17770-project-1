@@ -2,6 +2,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <list>
 #include <string>
 #include <utility>
 #include <vector>
@@ -669,6 +670,58 @@ void WasmVM::run_op() {
       TRACE("CALL: function index %u\n", func_idx);
       break;
     }
+    case WASM_OP_CALL_INDIRECT: {
+      uint32_t type_index = RD_U32();
+      uint32_t table_index = RD_U32();
+
+      if (sp() < 1) {
+        throw std::runtime_error("Not enough values on the operand stack for call_indirect");
+      }
+
+      Value table_elem = pop();
+      if (!std::holds_alternative<std::int32_t>(table_elem)) {
+        throw std::runtime_error("call_indirect index is not i32");
+      }
+
+      int32_t signed_idx = std::get<std::int32_t>(table_elem);
+      if (signed_idx < 0) {
+        throw std::runtime_error("call_indirect index out of bounds");
+      }
+      uint32_t elem_index = static_cast<uint32_t>(signed_idx);
+
+      const uint32_t imported_tables = module_.get_num_imported_tables();
+      if (table_index < imported_tables) {
+        throw std::runtime_error("call_indirect into imported table not supported");
+      }
+
+      uint32_t local_table_index = table_index - imported_tables;
+      if (local_table_index >= table_instances_.size()) {
+        throw std::runtime_error("call_indirect table index out of bounds");
+      }
+
+      auto& table = table_instances_[local_table_index];
+      if (elem_index >= table.size()) {
+        throw std::runtime_error("call_indirect table element out of bounds");
+      }
+
+      FuncDecl* target = table[elem_index];
+      if (target == nullptr) {
+        throw std::runtime_error("call_indirect null table entry");
+      }
+
+      SigDecl* expected_sig = module_.getSig(type_index);
+      if (expected_sig == nullptr) {
+        throw std::runtime_error("call_indirect bad type index");
+      }
+
+      if (*(target->sig) != *expected_sig) {
+        throw std::runtime_error("call_indirect signature mismatch");
+      }
+
+      TRACE("CALL_INDIRECT: table %u index %u\n", table_index, elem_index);
+      add_frame(target);
+      break;
+    }
     case WASM_OP_DROP: {
       if (sp() < 1) {
         throw std::runtime_error("Not enough values on the operand stack for drop");
@@ -832,6 +885,40 @@ void WasmVM::prepare_function_instances() {
   }
 }
 
+void WasmVM::prepare_element_segments() {
+  if (module_.get_num_tables() == 0) {
+    return;
+  }
+
+  const uint32_t imported_tables = module_.get_num_imported_tables();
+  for (const auto& elem : module_.Elems()) {
+    // In the MVP subset we only handle active segments targeting table 0.
+    const uint32_t table_index = 0;
+    if (table_index < imported_tables) {
+      throw std::runtime_error("Imported tables are not supported for element segments");
+    }
+
+    const uint32_t local_table_index = table_index - imported_tables;
+    if (local_table_index >= table_instances_.size()) {
+      throw std::runtime_error("Element segment references missing table");
+    }
+
+    auto& table = table_instances_[local_table_index];
+    uint64_t offset = elem.table_offset;
+    if (offset > table.size()) {
+      throw std::runtime_error("Element segment offset outside table bounds");
+    }
+
+    size_t cursor = static_cast<size_t>(offset);
+    for (auto func_ptr : elem.func_indices) {
+      if (cursor >= table.size()) {
+        throw std::runtime_error("Element segment exceeds table bounds");
+      }
+      table[cursor++] = func_ptr;
+    }
+  }
+}
+
 void WasmVM::reset_runtime_state() {
   linear_memory_.assign(initial_linear_memory_pages_ * WASM_PAGE_SIZE, 0);
 
@@ -846,6 +933,7 @@ void WasmVM::reset_runtime_state() {
   prepare_globals_storage();
   prepare_data_segments();
   prepare_function_instances();
+  prepare_element_segments();
 }
 
 bool WasmVM::validate_main_signature(size_t argc) const {
