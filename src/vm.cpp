@@ -270,7 +270,7 @@ std::unordered_map<const byte*, CtrlMeta>  WasmVM::pre_indexing(FuncDecl* f) {
   return ctrl_map;
 }
 
-bool WasmVM::invoke(FuncDecl* f) {
+void WasmVM::add_frame(FuncDecl* f) {
   auto ctrl_map = pre_indexing(f);
   byte* start = f->code_bytes.data();
   byte* end = start + f->code_bytes.size();
@@ -301,7 +301,11 @@ bool WasmVM::invoke(FuncDecl* f) {
   call_stack_.push_back(std::move(frame));
   TRACE("Pushed function frame onto call stack\n");
 
-  // TODO: implement the function body execution
+}
+
+bool WasmVM::invoke(FuncDecl* f) {
+  add_frame(f);
+  
   while (!call_stack_.empty()) {
     run_op();
   }
@@ -660,9 +664,9 @@ void WasmVM::run_op() {
       if (func_idx >= function_instances_.size()) {
         throw std::runtime_error("call function index out of bounds");
       }
-      FuncDecl f = function_instances_[func_idx];
+      FuncDecl* f = function_instances_[func_idx];
+      add_frame(f);
       TRACE("CALL: function index %u\n", func_idx);
-      invoke(&f);
       break;
     }
     case WASM_OP_DROP: {
@@ -823,8 +827,8 @@ void WasmVM::prepare_data_segments() {
 void WasmVM::prepare_function_instances() {
   function_instances_.clear();
   function_instances_.reserve(module_.Funcs().size());
-  for (const auto func : module_.Funcs()) {
-    function_instances_.push_back(func);
+  for (auto& func : module_.Funcs()) {
+    function_instances_.push_back(&func);
   }
 }
 
